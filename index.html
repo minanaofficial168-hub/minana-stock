@@ -1079,21 +1079,37 @@ let SUM = null;
 async function loadSummary() {
   try { const r = await api(Object.assign({ action: 'summary', event_id: S.event_id }, auth())); if (r.ok) { SUM = r.summary; if (TAB === 'sum') viewSum(); } } catch (e) { toast('ออฟไลน์'); }
 }
+/* กันเซิร์ฟเวอร์รุ่นเก่า: คิดยอดรายวัน/ช่องทาง/พนักงาน ใหม่จากบิลที่ไม่ถูกยกเลิก */
+function fixSum(s) {
+  if (!s || !s.bills_list || !s.bills_list.length || s.bills_list.length >= 300) return s;
+  const o = Object.assign({}, s, { by_day: {}, by_pay: {}, by_staff: {} });
+  s.bills_list.filter(b => !b.void).forEach(b => {
+    const d = String(b.ts).slice(0, 10), t = +b.total || 0;
+    o.by_day[d] = (o.by_day[d] || 0) + t;
+    if (t) { o.by_pay[b.pay || 'อื่นๆ'] = (o.by_pay[b.pay || 'อื่นๆ'] || 0) + t; o.by_staff[b.staff] = (o.by_staff[b.staff] || 0) + t; }
+  });
+  return o;
+}
 function viewSum() {
-  const s = SUM || (ST && ST.summary);
+  const s = fixSum(SUM || (ST && ST.summary));
   if (!s) { $('#view').innerHTML = '<div class="empty">กำลังโหลด…</div>'; return; }
   const today = (ST && ST.server_time || '').slice(0, 10);
   const days = Object.keys(s.by_day).sort();
+  /* วันที่ที่เลือกดู: ค่าเริ่มต้น = วันนี้ (ถ้ามีขาย) ไม่งั้นวันสุดท้ายที่มีขาย เช่น วันจบงาน */
+  const sel = viewSum.day && (days.includes(viewSum.day) || viewSum.day === today) ? viewSum.day : (days.includes(today) || !days.length ? today : days[days.length - 1]);
+  const selBills = (s.bills_list || []).filter(b => !b.void && String(b.ts).slice(0, 10) === sel).length;
   $('#view').innerHTML = `
-    <div class="kpis"><div class="kpi"><span>ยอดขายทั้งงาน</span><b>฿${fmt(s.sales)}</b></div><div class="kpi"><span>วันนี้</span><b>฿${fmt(s.by_day[today] || 0)}</b></div>
+    <div class="kpis"><div class="kpi"><span>ยอดขายทั้งงาน</span><b>฿${fmt(s.sales)}</b></div><div class="kpi"><span><select id="sumday" aria-label="เลือกวัน" style="min-height:0;padding:2px 6px;border-radius:8px;font-size:13px;width:auto;color:var(--mute)">${(days.includes(today) ? days : days.concat([today])).slice().reverse().map(d => `<option value="${d}" ${d === sel ? 'selected' : ''}>${d === today ? 'วันนี้' : 'วันที่ ' + fmtD(d)}</option>`).join('')}</select></span><b>฿${fmt(s.by_day[sel] || 0)}</b>${s.bills_list ? `<span>${selBills} บิล</span>` : ''}</div>
     <div class="kpi"><span>บิล</span><b>${fmt(s.bills)}</b></div><div class="kpi"><span>ชิ้นที่ขาย / แถม</span><b>${fmt(s.units)} <small class="muted" style="font-size:15px">/ ${fmt(s.gifts)}</small></b></div></div>
-    <div class="card"><h3 style="margin-top:0">รายวัน</h3><table>${days.map(d => `<tr><td>${d}</td><td class="n">฿${fmt(s.by_day[d])}</td></tr>`).join('') || '<tr><td class="muted">ยังไม่มียอด</td></tr>'}</table>
+    <div class="card"><h3 style="margin-top:0">รายวัน</h3><table>${days.map(d => `<tr data-day="${d}" style="cursor:pointer${d === sel ? ';background:var(--brand-soft);font-weight:700' : ''}"><td>${d}</td><td class="n">฿${fmt(s.by_day[d])}</td></tr>`).join('') || '<tr><td class="muted">ยังไม่มียอด</td></tr>'}</table>
     <h3>ช่องทางชำระ</h3><table>${Object.keys(s.by_pay).map(k => `<tr><td>${esc(k)}</td><td class="n">฿${fmt(s.by_pay[k])}</td></tr>`).join('')}</table>
     <h3>ตามพนักงาน</h3><table>${Object.keys(s.by_staff).map(k => `<tr><td>${esc(k)}</td><td class="n">฿${fmt(s.by_staff[k])}</td></tr>`).join('')}</table></div>
     <div class="card" style="padding:6px 10px"><div style="display:flex;justify-content:space-between;align-items:center;padding:6px 4px"><h3 style="margin:0">ตามสินค้า</h3><button class="btn line" style="min-height:36px" onclick="exportCsv()">CSV</button></div>
     <div class="tblwrap"><table><tr><th>สินค้า</th><th class="n">ขาย</th><th class="n">แถม</th><th class="n">฿</th><th class="n">เหลือ</th></tr>
     ${s.by_product.map(x => `<tr><td>${esc(x.name)} <span class="muted">${esc(x.color)}</span></td><td class="n">${x.sold}</td><td class="n">${x.gift}</td><td class="n">${fmt(x.amount)}</td><td class="n">${x.stock}</td></tr>`).join('')}</table></div></div>
-    ${s.bills_list && s.bills_list.length ? `<div class="card"><h3 style="margin-top:0">บิลล่าสุด</h3>${s.bills_list.filter(b => !b.void).slice(0, 60).map(b => `<div class="ln" style="align-items:flex-start"><div class="info"><div><b>฿${fmt(b.total)}</b> <span class="small muted">${esc(b.ts.slice(5, 16))} · ${esc(b.staff)} · ${esc(b.pay || 'แถม')}</span>${b.void ? ' <span class="tag" style="background:var(--bad-soft);color:var(--bad)">ยกเลิกแล้ว</span>' : ''}</div><div class="small muted">${b.lines.map(esc).join(' · ')}</div></div>${S.role === 'admin' && !b.void && ST.event.status === 'open' ? `<button class="btn line" style="min-height:34px;padding:0 10px" onclick="voidBill('${b.bill_id}')">ยกเลิก</button>` : ''}</div>`).join('')}</div>` : ''}`;
+    ${s.bills_list && s.bills_list.length ? `<div class="card"><h3 style="margin-top:0">บิลล่าสุด</h3>${s.bills_list.slice(0, 60).map(b => `<div class="ln" style="align-items:flex-start"><div class="info"><div><b>฿${fmt(b.total)}</b> <span class="small muted">${esc(b.ts.slice(5, 16))} · ${esc(b.staff)} · ${esc(b.pay || 'แถม')}</span>${b.void ? ' <span class="tag" style="background:var(--bad-soft);color:var(--bad)">ยกเลิกแล้ว</span>' : ''}</div><div class="small muted">${b.lines.map(esc).join(' · ')}</div></div>${S.role === 'admin' && !b.void && ST.event.status === 'open' ? `<button class="btn line" style="min-height:34px;padding:0 10px" onclick="voidBill('${b.bill_id}')">ยกเลิก</button>` : ''}</div>`).join('')}</div>` : ''}`;
+  const sd = $('#sumday'); if (sd) sd.onchange = () => { viewSum.day = sd.value; viewSum(); };
+  document.querySelectorAll('tr[data-day]').forEach(tr => tr.onclick = () => { viewSum.day = tr.dataset.day; viewSum(); window.scrollTo(0, 0); });
 }
 async function voidBill(id) {
   const note = await ask('ยกเลิกบิล ' + id + '\nของในบิลจะกลับเข้าสต๊อก', { input: true, placeholder: 'เหตุผล เช่น คีย์ผิด', yes: 'ยกเลิกบิล', danger: true }); if (note === null) return;
